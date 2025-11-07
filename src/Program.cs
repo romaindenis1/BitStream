@@ -1,4 +1,9 @@
-﻿ShowHelp();
+﻿if (args.Length == 0)
+{
+    ShowHelp();
+}
+
+
 
 static void ShowHelp()
 {
