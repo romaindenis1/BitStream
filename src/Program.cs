@@ -1,8 +1,4 @@
-﻿
-ShowHelp();
-
-
-
+﻿ShowHelp();
 
 static void ShowHelp()
 {
