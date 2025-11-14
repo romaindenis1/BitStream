@@ -37,5 +37,10 @@ namespace BitRuisseau
         /// The song featuring artists
         /// </summary>
         public string[] Featuring { get; set; }
+
+        /// <summary>
+        /// The hash of the file content
+        /// </summary>
+        public string Hash { get; }
     }
 }
