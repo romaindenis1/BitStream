@@ -1,9 +1,8 @@
-//base thing that creates when you run cli with arguments from visual studio ide
 {
   "profiles": {
     "BitStream": {
       "commandName": "Project",
-      "commandLineArgs": "local list"
+      "commandLineArgs": "local folder set Desktop"
     }
   }
 }
