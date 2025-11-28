@@ -19,6 +19,11 @@ namespace BitRuisseau
         public string Artist { get; set; }
 
         /// <summary>
+        /// The song album
+        /// </summary>
+        public string Album { get; set; }
+
+        /// <summary>
         /// The song release date
         /// </summary>
         public int Year { get; set; }

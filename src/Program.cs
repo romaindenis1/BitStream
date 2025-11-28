@@ -1,12 +1,16 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Collections.Generic;
+using BitRuisseau;
 
 namespace BitStream
 {
     //sans globals, tres complique a faire une variable qui marche par tout
     static class Globals
     {
-        public static string Path = "C:\\Users\\" + Environment.UserName + "\\Documents";
+        public static string Path = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
     }
 
     class Program
@@ -123,11 +127,6 @@ namespace BitStream
                     }
                     RemoteCatalog(id);
                     break;
-                /*
-                 * J'ai auncune idée si ca marche, TODO changer eventuellement
-                 * Juste du code placeholder from the top of my head
-                 * Les autres marchent par ce que c'est la meme syntaxe, celui la aucune idée
-                 */
                 case "import":
                     int? node = null;
                     int? song = null;
@@ -159,16 +158,70 @@ namespace BitStream
 
         static void LocalList()
         {
-
-            string[] extensions = new[] { "*.mp3", "*.wav", "*.sln", "*.csproj" };
-            for (int e = 0; e < extensions.Length; e++)
+            string[] extensions = new[] { "*.mp3", "*.wav" };
+            var files = extensions.SelectMany(ext => EnumerateFilesSafe(Globals.Path, ext));
+            int idx = 0;
+            foreach (var file in files)
             {
-                string[] allfiles = Directory.GetFiles(Globals.Path, extensions[e], SearchOption.AllDirectories);
-                foreach (var file in allfiles)
+                idx++;
+                ISong s = Song.FromFile(file, idx);
+
+                long size = s.Size;
+                string sizeHuman;
+                if (size >= 1 << 20) sizeHuman = $"{(size / (double)(1 << 20)):0.##} MB";
+                else if (size >= 1 << 10) sizeHuman = $"{(size / (double)(1 << 10)):0.##} KB";
+                else sizeHuman = $"{size} B";
+
+                string length = s.Duration.TotalHours >= 1 ? s.Duration.ToString(@"hh\:mm\:ss") : s.Duration.ToString(@"mm\:ss");
+
+                Console.WriteLine($"[{idx}] Title: {s.Title} | Album: {s.Album} | Size: {sizeHuman} | Length: {length} | Artist: {s.Artist}");
+            }
+        }
+
+        // Enumerate files recursively but skip directories we can't access.
+        static IEnumerable<string> EnumerateFilesSafe(string root, string searchPattern)
+        {
+            var dirs = new Stack<string>();
+            dirs.Push(root);
+
+            while (dirs.Count > 0)
+            {
+                var current = dirs.Pop();
+
+                string[] files = Array.Empty<string>();
+                try
                 {
-                    FileInfo info = new FileInfo(file);
-                    Console.WriteLine(info.Name);
+                    files = Directory.GetFiles(current, searchPattern);
                 }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue;
+                }
+
+                foreach (var f in files)
+                    //yield pour signaler de continuer a iterer
+                    yield return f;
+
+                string[] subdirs = Array.Empty<string>();
+                try
+                {
+                    subdirs = Directory.GetDirectories(current);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    continue;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue;
+                }
+
+                foreach (var d in subdirs)
+                    dirs.Push(d);
             }
         }
 
