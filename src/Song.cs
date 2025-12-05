@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using TagLib;
 
 namespace BitRuisseau
@@ -57,10 +58,33 @@ namespace BitRuisseau
             else
                 s.Artist = (s.Featuring.Length > 0) ? s.Featuring[0] : string.Empty;
 
-            // Skip computing file hash here to keep listing fast; leave empty.
-            s.Hash = string.Empty;
+            // Generate the hash using the new method
+            s.Hash = ComputeFileHash(path) ?? string.Empty;
 
             return s;
+        }
+
+        // The helper method to calculate SHA256
+        private static string ComputeFileHash(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+                return null;
+
+            try
+            {
+                using var sha256 = SHA256.Create();
+                using var stream = System.IO.File.OpenRead(filePath);
+                byte[] hashBytes = sha256.ComputeHash(stream);
+
+                // Convert to hex and lowercase
+                return BitConverter.ToString(hashBytes)
+                                   .Replace("-", "") // Remove the '-' separator
+                                   .ToLowerInvariant();
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }
