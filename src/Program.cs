@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
+using System.Threading;
 using BitRuisseau;
+using Backend;
 
 namespace BitStream
 {
@@ -15,8 +18,90 @@ namespace BitStream
 
     class Program
     {
-        static void Main(string[] args)
+        /*
+         * Todo: make sharing only on ask, will do later when other 
+         * implementations can ask
+         */
+
+        // Guard to prevent the faulty Communicator from triggering the logic twice
+        private static bool _hasConnectedOnce = false;
+        private static readonly object _connectionLock = new object();
+
+        static async Task Main(string[] args)
         {
+            // Setup MQTT communicator early so we can broadcast our song list on connect
+            // Broker is a real remote server (hardcoded as requested)
+            var brokerHost = "blue.section-inf.ch";
+            var nodeId = Environment.MachineName;
+            var mqttTopic = "BitRuisseau";
+
+            var broadcastFinished = new TaskCompletionSource<bool>();
+            var globalCommunicator = new MqttCommunicator(brokerHost, nodeId, mqttTopic);
+
+            globalCommunicator.OnConnected = () =>
+            {
+                // LOCK = lancer seulement une fois, meme si la classe fait >1 apelles
+                lock (_connectionLock)
+                {
+                    if (_hasConnectedOnce) return;
+                    _hasConnectedOnce = true;
+                }
+
+                // Send the song list
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Wait or else problems
+                        await Task.Delay(3000);
+
+                        Console.WriteLine("Connected to Broker. Sending library...");
+                        SendSongListToBroker(globalCommunicator, mqttTopic);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error while sending song list on connect: {ex.Message}");
+                    }
+                    finally
+                    {
+                        // Stop connection so can continue working in local
+                        try { globalCommunicator.Stop(); } catch { }
+                        broadcastFinished.TrySetResult(true);
+                    }
+                });
+            };
+
+            // Start communicator in background so startup doesn't block if broker is unreachable
+            Console.WriteLine("Initializing BitStream...");
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    globalCommunicator.Start();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: MQTT communicator failed to start: {ex.Message}");
+                    broadcastFinished.TrySetResult(false);
+                }
+            });
+
+            // WAIT here until timeout or done
+            var completedTask = await Task.WhenAny(broadcastFinished.Task, Task.Delay(10000));
+
+            if (completedTask != broadcastFinished.Task)
+            {
+                Console.WriteLine("Connection timed out. Skipping broadcast...");
+                try { globalCommunicator.Stop(); } catch { }
+            }
+            else
+            {
+                Console.WriteLine("Initialization complete.");
+            }
+
+            Console.WriteLine(); // Spacing
+
             // Liste
             var argsList = args ?? Array.Empty<string>();
 
@@ -26,9 +111,8 @@ namespace BitStream
                 return;
             }
 
-            var cmd = argsList[0].ToLowerInvariant();
-
             // met tout en lowercase pour eviter erreures possibles
+            var cmd = argsList[0].ToLowerInvariant();
 
             switch (cmd)
             {
@@ -80,6 +164,9 @@ namespace BitStream
                         return;
                     }
                     LocalPlay(id);
+                    break;
+                case "broadcast":
+                    LocalBroadcast(SubArray(a, 1));
                     break;
                 case "folder":
                     if (a.Length == 1 || a[1].ToLowerInvariant() == "show")
@@ -166,6 +253,7 @@ namespace BitStream
                 idx++;
                 ISong s = Song.FromFile(file, idx);
 
+                //Format size
                 long size = s.Size;
                 string sizeHuman;
                 if (size >= 1 << 20) sizeHuman = $"{(size / (double)(1 << 20)):0.##} MB";
@@ -203,7 +291,6 @@ namespace BitStream
                 }
 
                 foreach (var f in files)
-                    //yield pour signaler de continuer a iterer
                     yield return f;
 
                 string[] subdirs = Array.Empty<string>();
@@ -226,6 +313,85 @@ namespace BitStream
         }
 
         static void LocalPlay(int id) { }
+
+        static void LocalBroadcast(string[] a)
+        {
+            // local broadcast kept for manual trigger, but prefer automatic broker broadcast on connect
+            string broker = (a.Length >= 1 && !string.IsNullOrWhiteSpace(a[0])) ? a[0] : "localhost";
+            string topic = (a.Length >= 2 && !string.IsNullOrWhiteSpace(a[1])) ? a[1] : "BitRuisseau";
+            var nodeId = Environment.MachineName;
+
+            Console.WriteLine($"Broadcasting local songs to MQTT broker '{broker}' on topic '{topic}'...");
+
+            var communicator = new MqttCommunicator(broker, nodeId, topic);
+            try
+            {
+                communicator.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to start MQTT communicator: {ex.Message}");
+                return;
+            }
+
+            string[] extensions = new[] { "*.mp3", "*.wav" };
+            var files = extensions.SelectMany(ext => EnumerateFilesSafe(Globals.Path, ext));
+            int idx = 0;
+            var list = new List<ISong>();
+            foreach (var file in files)
+            {
+                idx++;
+                ISong s = Song.FromFile(file, idx);
+                list.Add(s);
+            }
+
+            var message = new Message
+            {
+                Sender = nodeId,
+                Recipient = "all",
+                Action = "songlist",
+                SongList = list
+            };
+
+            try
+            {
+                communicator.Send(message, topic);
+                Console.WriteLine($"Broadcasted {list.Count} songs.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to send message: {ex.Message}");
+            }
+            finally
+            {
+                communicator.Stop();
+            }
+        }
+
+        static void SendSongListToBroker(MqttCommunicator communicator, string topic)
+        {
+            string[] extensions = new[] { "*.mp3", "*.wav" };
+            var files = extensions.SelectMany(ext => EnumerateFilesSafe(Globals.Path, ext));
+            int idx = 0;
+            var list = new List<ISong>();
+            foreach (var file in files)
+            {
+                idx++;
+                ISong s = Song.FromFile(file, idx);
+                list.Add(s);
+            }
+
+            var message = new Message
+            {
+                Sender = Environment.MachineName,
+                Recipient = "all",
+                Action = "songlist",
+                SongList = list
+            };
+
+            communicator.Send(message, topic);
+            Console.WriteLine($"Sent {list.Count} songs to broker on topic '{topic}'.");
+        }
 
         static void LocalFolderShow()
         {
@@ -255,6 +421,7 @@ namespace BitStream
             Console.WriteLine("  Local Media Library:");
             Console.WriteLine("    local list                            List all local audio files");
             Console.WriteLine("    local play <id>                       Play a local audio file by ID");
+            Console.WriteLine("    local broadcast [broker] [topic]      Broadcast local song metadata to MQTT broker");
             Console.WriteLine("    local folder show                    Show the current local media folder");
             Console.WriteLine("    local folder set <path>               Set the local media folder path\n");
             Console.WriteLine("  Remote Media Libraries:");

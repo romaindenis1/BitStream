@@ -1,2 +1,2 @@
 # BitStream
-# Romain Denis
+## Romain Denis

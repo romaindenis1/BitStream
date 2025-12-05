@@ -65,6 +65,8 @@ public class MqttCommunicator
     }
 
     public Action<Message>? OnMessageReceived { private get; set; }
+    // Invoked after a successful connection to the broker
+    public Action? OnConnected { private get; set; }
     public void Start()
     {
         //register context to be able to propagate exception to caller thread
@@ -95,15 +97,22 @@ public class MqttCommunicator
 
         };
 
-        //Async => sync
+        //Connect
         Connect();
+
+        try
+        {
+            OnConnected?.Invoke();
+        }
+        catch
+        {
+        }
 
         //Async => sync
         var mqttSubscribeOptions = _factory
             .CreateSubscribeOptionsBuilder()
             .WithTopicFilter(_topic,
                 _qos,
-                //noLocal:..,
                 retainAsPublished: _retain,
                 retainHandling: MqttRetainHandling.SendAtSubscribe)
             .Build();
@@ -128,6 +137,13 @@ public class MqttCommunicator
         if (connectResult.ResultCode != MqttClientConnectResultCode.Success)
         {
             throw new InvalidOperationException($"Failed to connect to the MQTT broker. Reason: {connectResult.ReasonString}");
+        }
+        try
+        {
+            OnConnected?.Invoke();
+        }
+        catch
+        {
         }
 
     }
