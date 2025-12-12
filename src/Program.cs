@@ -35,41 +35,45 @@ namespace BitStream
             var nodeId = Environment.MachineName;
             var mqttTopic = "BitRuisseau";
 
-            var broadcastFinished = new TaskCompletionSource<bool>();
-            var globalCommunicator = new MqttCommunicator(brokerHost, nodeId, mqttTopic);
+            // We no longer broadcast catalog on start; keep program alive to listen.
 
-            globalCommunicator.OnConnected = () =>
+            // Declare communicator before handler to satisfy definite assignment rules
+            MqttCommunicator? globalCommunicator = null;
+
+            // Handler: respond to askCatalog addressed to us, broadcast, or unspecified recipient
+            void handelmessageRecived(Message msg)
             {
-                // LOCK = lancer seulement une fois, meme si la classe fait >1 apelles
-                lock (_connectionLock)
-                {
-                    if (_hasConnectedOnce) return;
-                    _hasConnectedOnce = true;
-                }
+                if (msg == null) return;
 
-                // Send the song list
-                Task.Run(async () =>
+                var isAskCatalog = string.Equals(msg.Action, "askCatalog", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(msg.Action, "askcatalog", StringComparison.OrdinalIgnoreCase);
+
+                // Accept if recipient is broadcast, matches our node, or is missing/empty
+                var isForUs = string.IsNullOrWhiteSpace(msg.Recipient)
+                              || string.Equals(msg.Recipient, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(msg.Recipient, nodeId, StringComparison.OrdinalIgnoreCase);
+
+                if (isAskCatalog && isForUs)
                 {
                     try
                     {
-                        // Wait or else problems
-                        await Task.Delay(3000);
-
-                        Console.WriteLine("Connected to Broker. Sending library...");
-                        SendSongListToBroker(globalCommunicator, mqttTopic);
+                        var comm = globalCommunicator;
+                        if (comm == null) return;
+                        var recipient = string.IsNullOrWhiteSpace(msg.Sender) ? null : msg.Sender;
+                        SendSongListToBroker(comm, mqttTopic, recipient);
+                        Console.WriteLine("Catalog sent in response to askCatalog.");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error while sending song list on connect: {ex.Message}");
+                        Console.WriteLine($"Failed to send catalog: {ex.Message}");
                     }
-                    finally
-                    {
-                        // Stop connection so can continue working in local
-                        try { globalCommunicator.Stop(); } catch { }
-                        broadcastFinished.TrySetResult(true);
-                    }
-                });
-            };
+                }
+            }
+
+            globalCommunicator = new MqttCommunicator(brokerHost, nodeId, mqttTopic, onMessageReceived: handelmessageRecived);
+
+            // OnConnected no-op to keep connection alive
+            globalCommunicator.OnConnected = () => { Console.WriteLine("Connected to MQTT broker."); };
 
             // Start communicator in background so startup doesn't block if broker is unreachable
             Console.WriteLine("Initializing BitStream...");
@@ -83,29 +87,23 @@ namespace BitStream
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Warning: MQTT communicator failed to start: {ex.Message}");
-                    broadcastFinished.TrySetResult(false);
                 }
             });
-
-            // WAIT here until timeout or done
-            var completedTask = await Task.WhenAny(broadcastFinished.Task, Task.Delay(10000));
-
-            if (completedTask != broadcastFinished.Task)
-            {
-                Console.WriteLine("Connection timed out. Skipping broadcast...");
-                try { globalCommunicator.Stop(); } catch { }
-            }
-            else
-            {
-                Console.WriteLine("Initialization complete.");
-            }
-
+            Console.WriteLine("MQTT initialized; listening for messages.");
             Console.WriteLine(); // Spacing
 
             // Liste
             var argsList = args ?? Array.Empty<string>();
 
-            if (argsList.Length == 0 || argsList[0] == "-h" || argsList[0] == "--help")
+            // If no args, just listen indefinitely for MQTT messages
+            if (argsList.Length == 0)
+            {
+                Console.WriteLine("No arguments provided. Listening for MQTT messages (press Ctrl+C to exit)...");
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return;
+            }
+
+            if (argsList[0] == "-h" || argsList[0] == "--help")
             {
                 ShowHelp();
                 return;
@@ -207,12 +205,12 @@ namespace BitStream
                     RemoteList();
                     break;
                 case "catalog":
-                    if (a.Length < 2 || !int.TryParse(a[1], out var id))
+                    if (a.Length < 2)
                     {
-                        Console.WriteLine("Usage: remote catalog <id>");
+                        Console.WriteLine("Usage: remote catalog <recipientName>");
                         return;
                     }
-                    RemoteCatalog(id);
+                    RemoteCatalogByName(a[1]);
                     break;
                 case "import":
                     int? node = null;
@@ -368,7 +366,7 @@ namespace BitStream
             }
         }
 
-        static void SendSongListToBroker(MqttCommunicator communicator, string topic)
+        static void SendSongListToBroker(MqttCommunicator communicator, string topic, string? recipient = null)
         {
             string[] extensions = new[] { "*.mp3", "*.wav" };
             var files = extensions.SelectMany(ext => EnumerateFilesSafe(Globals.Path, ext));
@@ -384,7 +382,7 @@ namespace BitStream
             var message = new Message
             {
                 Sender = Environment.MachineName,
-                Recipient = "all",
+                Recipient = recipient ?? "all",
                 Action = "songlist",
                 SongList = list
             };
@@ -406,7 +404,40 @@ namespace BitStream
 
         static void RemoteList() { }
 
-        static void RemoteCatalog(int id) { }
+        static void RemoteCatalogByName(string recipient)
+        {
+            var communicator = new MqttCommunicator("blue.section-inf.ch", Environment.MachineName, "BitRuisseau");
+            var protocol = new Protocol(communicator, Environment.MachineName);
+            try
+            {
+                communicator.Start();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to connect to MQTT: {ex.Message}");
+                return;
+            }
+
+            var catalog = protocol.AskCatalog(recipient);
+            if (catalog.Count == 0)
+            {
+                Console.WriteLine($"No catalog received from '{recipient}'.");
+            }
+            else
+            {
+                int idx = 0;
+                foreach (var s in catalog)
+                {
+                    idx++;
+                    long size = s.Size;
+                    string sizeHuman = size >= 1 << 20 ? $"{(size / (double)(1 << 20)):0.##} MB" : (size >= 1 << 10 ? $"{(size / (double)(1 << 10)):0.##} KB" : $"{size} B");
+                    string length = s.Duration.TotalHours >= 1 ? s.Duration.ToString(@"hh\:mm\:ss") : s.Duration.ToString(@"mm\:ss");
+                    Console.WriteLine($"[{idx}] Title: {s.Title} | Album: {s.Album} | Size: {sizeHuman} | Length: {length} | Artist: {s.Artist}");
+                }
+            }
+
+            communicator.Stop();
+        }
 
         static void RemoteImport(int? node, int? song) { }
 

@@ -2,6 +2,8 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using BitRuisseau;
 using MQTTnet;
 using MQTTnet.Protocol;
@@ -25,15 +27,21 @@ public class MqttCommunicator
     private MqttQualityOfServiceLevel _qos = MqttQualityOfServiceLevel.AtLeastOnce;
 
     public MqttCommunicator(
-        string brokerHost, string nodeId, string topic = MqttCommunicator.DefaultTopic,
-        string username = "ict", string password = "321")
+        string brokerHost,
+        string nodeId,
+        string topic = MqttCommunicator.DefaultTopic,
+        string username = "ict",
+        string password = "321",
+        Action<BitRuisseau.Message>? onMessageReceived = null)
     {
         _nodeId = nodeId;
         _topic = topic;
-        _brokerIp = GetPreferredIpAddress(brokerHost).ToString();        
+        _brokerIp = GetPreferredIpAddress(brokerHost).ToString();
         _username = username;
         _password = password;
-        _mqttClient = _factory.CreateMqttClient();    }
+        _mqttClient = _factory.CreateMqttClient();
+        OnMessageReceived = onMessageReceived;
+    }
 
     IPAddress GetPreferredIpAddress(string host)
     {
@@ -64,7 +72,7 @@ public class MqttCommunicator
         var publishResult = _mqttClient.PublishAsync(applicationMessage).Result;
     }
 
-    public Action<Message>? OnMessageReceived { private get; set; }
+    public Action<Message>? OnMessageReceived { get; set; }
     // Invoked after a successful connection to the broker
     public Action? OnConnected { private get; set; }
     public void Start()
@@ -100,14 +108,6 @@ public class MqttCommunicator
         //Connect
         Connect();
 
-        try
-        {
-            OnConnected?.Invoke();
-        }
-        catch
-        {
-        }
-
         //Async => sync
         var mqttSubscribeOptions = _factory
             .CreateSubscribeOptionsBuilder()
@@ -127,10 +127,15 @@ public class MqttCommunicator
 
     private void Connect()
     {
+        // Use a globally unique client id to avoid SessionTakenOver disconnects
+        var uniqueClientId = $"{_nodeId}-{Environment.ProcessId}-{Guid.NewGuid()}";
         var options = new MqttClientOptionsBuilder()
-            .WithClientId(_nodeId)
+            .WithClientId(uniqueClientId)
             .WithTcpServer(_brokerIp, 1883) //
             .WithCredentials(_username, _password)
+            .WithCleanSession(true)
+            .WithKeepAlivePeriod(TimeSpan.FromSeconds(30))
+            .WithSessionExpiryInterval(0)
             .Build();
 
         var connectResult = _mqttClient.ConnectAsync(options).Result;
@@ -138,13 +143,8 @@ public class MqttCommunicator
         {
             throw new InvalidOperationException($"Failed to connect to the MQTT broker. Reason: {connectResult.ReasonString}");
         }
-        try
-        {
-            OnConnected?.Invoke();
-        }
-        catch
-        {
-        }
+        // Notify connection success once here
+        try { OnConnected?.Invoke(); } catch { }
 
     }
 
