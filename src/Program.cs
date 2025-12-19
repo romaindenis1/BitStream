@@ -91,8 +91,21 @@ namespace BitStream
 
             globalCommunicator = new MqttCommunicator(brokerHost, nodeId, mqttTopic, onMessageReceived: handelmessageRecived);
 
-            // OnConnected no-op to keep connection alive
-            globalCommunicator.OnConnected = () => { Console.WriteLine("Connected to MQTT broker."); };
+            // OnConnected: announce online status regardless of CLI args
+            var protocolOnConnect = new Protocol(globalCommunicator, nodeId);
+            globalCommunicator.OnConnected = () =>
+            {
+                Console.WriteLine("Connected to MQTT broker.");
+                try
+                {
+                    protocolOnConnect.SayOnline();
+                    Console.WriteLine("Announced online status.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Failed to announce online status: {ex.Message}");
+                }
+            };
 
             // Start communicator in background so startup doesn't block if broker is unreachable
             Console.WriteLine("Initializing BitStream...");
