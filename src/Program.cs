@@ -48,6 +48,9 @@ namespace BitStream
                 var isAskCatalog = string.Equals(msg.Action, "askCatalog", StringComparison.OrdinalIgnoreCase)
                                    || string.Equals(msg.Action, "askcatalog", StringComparison.OrdinalIgnoreCase);
 
+                var isAskOnline = string.Equals(msg.Action, "askOnline", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(msg.Action, "askonline", StringComparison.OrdinalIgnoreCase);
+
                 // Accept if recipient is broadcast, matches our node, or is missing/empty
                 var isForUs = string.IsNullOrWhiteSpace(msg.Recipient)
                               || string.Equals(msg.Recipient, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
@@ -66,6 +69,22 @@ namespace BitStream
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Failed to send catalog: {ex.Message}");
+                    }
+                }
+
+                if (isAskOnline && isForUs)
+                {
+                    try
+                    {
+                        var comm = globalCommunicator;
+                        if (comm == null) return;
+                        var protocol = new Protocol(comm, nodeId);
+                        protocol.SayOnline();
+                        Console.WriteLine("Responded with online to askOnline.");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to respond online: {ex.Message}");
                     }
                 }
             }

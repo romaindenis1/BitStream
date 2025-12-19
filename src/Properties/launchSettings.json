@@ -1,8 +1,7 @@
 {
   "profiles": {
     "BitStream": {
-      "commandName": "Project",
-      "commandLineArgs": "remote catalog INF-B21-M15"
+      "commandName": "Project"
     }
   }
 }
